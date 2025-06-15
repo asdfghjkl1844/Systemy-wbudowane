@@ -1,0 +1,109 @@
+// PIC24FJ128GA010 Configuration Bit Settings
+// For more on Configuration Bits, see Section 1.1
+// consult your device data sheet
+// CONFIG2
+#pragma config POSCMOD = XT // XT Oscillator mode selected
+#pragma config OSCIOFNC = ON // OSC2/CLKO/RC15 as port I/O (RC15)
+#pragma config FCKSM = CSDCMD // Clock Switching and Monitor disabled
+#pragma config FNOSC = PRI // Primary Oscillator (XT, HS, EC)
+#pragma config IESO = ON // Int Ext Switch Over Mode enabled
+// CONFIG1
+#pragma config WDTPS = PS32768 // Watchdog Timer Postscaler (1:32,768)
+#pragma config FWPSA = PR128 // WDT Prescaler (1:128)
+#pragma config WINDIS = ON // Watchdog Timer Window Mode disabled
+#pragma config FWDTEN = OFF // Watchdog Timer disabled
+#pragma config ICS = PGx2 // Emulator/debugger uses EMUC2/EMUD2
+#pragma config GWRP = OFF // Writes to program memory allowed
+#pragma config GCP = OFF // Code protection is disabled
+#pragma config JTAGEN = OFF // JTAG port is disabled
+// #pragma config statements should precede project file includes.
+// Use project enums instead of #define for ON and OFF.
+#include <xc.h>
+#include "adc.h"
+#include "buttons.h"
+#include <libpic30.h>
+#include <stdbool.h>
+
+#define FCY 4000000UL // czestotliwosc robocza oscylatora jako polowa czestotliwosci (FNOSC = FRC -> FCY = 4000000)
+#define THRESHOLD 512 // Poziom napiecia z potencjometru (polowa zakresu ADC)
+#define BLINK_TIME_SECONDS 5 // Liczba sekund mrugania przed stalym alarmem
+#define BUTTON_RESET BUTTON_S4 // Przycisk sluzacy do wylaczenia alarmu
+
+void __delay_ms(unsigned long ms) {
+    __delay32(ms * FCY / 1000);
+}
+
+int main(void) {
+     // Inicjalizacja potencjometru
+    ADC_SetConfiguration(ADC_CONFIGURATION_DEFAULT);
+    ADC_ChannelEnable(ADC_CHANNEL_POTENTIOMETER);
+    BUTTON_Enable(BUTTON_RESET); //Aktywacja przycisku 
+
+    / Ustawienie portu A jako wyjsciowego i zgaszenie LEDow
+    TRISA = 0x0000;
+    LATA = 0;
+
+    bool alarmActive = false; // flaga: czy alarm jest obecnie wlaczony?
+    bool alarmBlinking = false; //flaga: czy trwa faza mrugania?
+    bool alarmWasTriggered = false; //flaga: czy alarm byl już uruchomiony?
+
+    while (1) {
+        unsigned int value = ADC_Read10bit(ADC_CHANNEL_POTENTIOMETER); // Odczyt wartosci z potencjometru
+        bool resetPressed = BUTTON_IsPressed(BUTTON_RESET); // Sprawdzenie, czy przycisk został wcisnięty
+
+        // Wylaczenie alarmu recznie lub przez cofniecie potencjometru
+        if (alarmActive &&
+            (value < THRESHOLD || resetPressed)) {
+            alarmActive = false;
+            alarmBlinking = false;
+            alarmWasTriggered = true; // zapamiętaj, ze alarm już byl uruchomiony
+            LATA = 0;
+            __delay_ms(200);
+            continue;
+        }
+
+        // Jesli wartosc wrocila ponizej progu, zezwol na kolejne wlaczenie alarmu
+        if (value < THRESHOLD) {
+            alarmWasTriggered = false;
+        }
+
+        // Wlączenie alarmu tylko jesli nie byl jeszcze wlaczony w tej sesji
+        if (value > THRESHOLD && !alarmActive && !alarmWasTriggered) {
+            alarmActive = true;
+            alarmBlinking = true;
+        }
+
+        // Faza mrugania
+        if (alarmActive && alarmBlinking) {
+            for (int i = 0; i < BLINK_TIME_SECONDS; i++) {
+                if (ADC_Read10bit(ADC_CHANNEL_POTENTIOMETER) < THRESHOLD ||
+                    BUTTON_IsPressed(BUTTON_RESET)) {
+                    alarmActive = false;
+                    alarmBlinking = false;
+                    alarmWasTriggered = true;
+                    LATA = 0;
+                    break;
+                }
+
+                LATA = 0b00000001; // Zapal tylko jedna diode (pierwsza)
+                __delay_ms(500);
+                LATA = 0; // Zgas diode
+                __delay_ms(500);
+            }
+
+            // Po mruganiu przejdz do pelnego alarmu
+            if (alarmActive) {
+                alarmBlinking = false;
+            }
+        }
+
+        // Swiecenie wszystkich LEDow jesli alarm aktywny (po mruganiu)
+        if (alarmActive && !alarmBlinking) {
+            LATA = 0xFF; // Zapal wszystkie diody
+        }
+
+        __delay_ms(100);
+    }
+
+    return 0;
+}

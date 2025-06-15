@@ -1,0 +1,160 @@
+// PIC24FJ128GA010 Configuration Bit Settings
+// For more on Configuration Bits, see Section 1.1
+// consult your device data sheet
+// CONFIG2
+#pragma config POSCMOD = XT // XT Oscillator mode selected
+#pragma config OSCIOFNC = ON // OSC2/CLKO/RC15 as port I/O (RC15)
+#pragma config FCKSM = CSDCMD // Clock Switching and Monitor disabled
+#pragma config FNOSC = PRI // Primary Oscillator (XT, HS, EC)
+#pragma config IESO = ON // Int Ext Switch Over Mode enabled
+// CONFIG1
+#pragma config WDTPS = PS32768 // Watchdog Timer Postscaler (1:32,768)
+#pragma config FWPSA = PR128 // WDT Prescaler (1:128)
+#pragma config WINDIS = ON // Watchdog Timer Window Mode disabled
+#pragma config FWDTEN = OFF // Watchdog Timer disabled
+#pragma config ICS = PGx2 // Emulator/debugger uses EMUC2/EMUD2
+#pragma config GWRP = OFF // Writes to program memory allowed
+#pragma config GCP = OFF // Code protection is disabled
+#pragma config JTAGEN = OFF // JTAG port is disabled
+// #pragma config statements should precede project file includes.
+// Use project enums instead of #define for ON and OFF.
+
+#include <xc.h>
+#include <libpic30.h>
+#include <stdbool.h>
+#include "buttons.h"
+
+// Funkcja toGray: zamiana liczby binarnej (0..255) na 8-bitowy kod Graya
+unsigned char toGray(unsigned char num) {
+    return num ^ (num >> 1); // XOR liczby z jej przesunieciem w prawo o 1 bit
+}
+
+int main(void) {
+    //Dostęp do portu A
+    AD1PCFG = 0xFFFF; // set to digital I/O (not analog)
+    TRISA = 0x0000; // set all port bits to be output
+
+    // Inicjalizacja przycisków: S3 = NEXT, S4 = PREV
+    BUTTON_Enable(BUTTON_S3); // Aktywacja przycisku S3
+    BUTTON_Enable(BUTTON_S4); // Aktywacja przycisku S4
+
+    // Zmienne pomocnicze
+    int programIndex = 1;   // Indeks biezacego podprogramu: 1...6
+    unsigned char value = 0;   // Biezaca wartosc licznika (dla binarnego/Gray/BCD)
+
+    // Na poczatek ustawiamy value zgodnie z programIndex=1 (program 1 = binarny w gore, start od 0)
+    value = 0;
+
+    //Glowna petla 
+    while (1) {
+        // Obsluga przycisku NEXT (BUTTON_S3)
+        if (BUTTON_IsPressed(BUTTON_S3)) {
+            __delay32(1000000); // Opoznienie dla eliminacji wykrycia wielokrotnego nacisniecia
+            if (BUTTON_IsPressed(BUTTON_S3)) {
+                // Przelaczamy na nastepny podprogram
+                programIndex = (programIndex % 6) + 1;
+
+                // Ustalamy poczatkowa wartosc 'value' wedlug nowego programu:
+                switch (programIndex) {
+                    case 1: value = 0;   break;  // binarny w gore (0...255)
+                    case 2: value = 255; break;  // binarny w dol (255...0)
+                    case 3: value = 0;   break;  // Gray w gore (Gray(0)...Gray(255))
+                    case 4: value = 255; break;  // Gray w dol (Gray(255)...Gray(0))
+                    case 5: value = 0;   break;  // BCD w gore (00...99)
+                    case 6: value = 99;  break;  // BCD w dol (99...00)
+                }
+
+                __delay32(500000); // Dodatkowe opoznienie, aby jedno przytrzymanie bylo jedna zmiana programu
+            }
+        }
+        // Obsluga przycisku PREV (BUTTON_S4)
+        else if (BUTTON_IsPressed(BUTTON_S4)) {
+            __delay32(1000000); // Opoznienie dla eliminacji wykrycia wielokrotnego nacisniecia
+            if (BUTTON_IsPressed(BUTTON_S4)) {
+                // Przelaczamy na poprzedni podprogram 
+                programIndex = (programIndex == 1) ? 6 : (programIndex - 1);
+
+                // Ustalamy poczatkowa wartosc 'value' wedlug nowego programu:
+                switch (programIndex) {
+                    case 1: value = 0;   break;  // binarny w gore (0...255)
+                    case 2: value = 255; break;  // binarny w dol (255...0)
+                    case 3: value = 0;   break;  // Gray w gore (Gray(0)...Gray(255))
+                    case 4: value = 255; break;  // Gray w dol (Gray(255)...Gray(0))
+                    case 5: value = 0;   break;  // BCD w gore (00...99)
+                    case 6: value = 99;  break;  // BCD w dol (99...00)
+                }
+
+                __delay32(500000); // Kolejny krotki delay, by zapobiec wielokrotnej zmianie
+            }
+        }
+
+        // Wykonanie aktualnego podprogramu i wyswietlenie na ledach
+        switch (programIndex) {
+            case 1:
+                // 8-bitowy licznik binarny w gore
+                // Wyswietlamy 'value', potem zwiekszamy (od 255 do 0)
+                LATA = value;
+                value++;
+                // Gdy value przechodzi z 255 na 256, program automatycznie wraca do 0
+                break;
+
+            case 2:
+                // 8-bitowy licznik binarny w dol (255..0)
+                // Wyswietlamy 'value', potem zmniejszamy (od 0 do 255 i z powrotem do 0)
+                LATA = value;
+                value--;
+                // Value przechodzi z 0 na 255
+                break;
+
+            case 3:
+                // 8-bitowy licznik w kodzie Graya w gore
+                // Wyswietlamy toGray(value), potem value++
+                LATA = toGray(value);
+                value++;
+                // Jesli value z 255 przechodzi na 0, to dalej Gray(0)
+                break;
+
+            case 4:
+                // 8-bitowy licznik w kodzie Graya w dol
+                // Wyswietlamy toGray(value), potem value--
+                LATA = toGray(value);
+                value--;
+                break;
+
+            case 5: {
+                // 2×4-bitowy licznik w kodzie BCD w gore (00..99)
+                // Najpierw obliczamy cyfre dziesiatek i jednosci, wyswietlamy BCD,
+                // potem inkrementujemy value, a gdy > 99 zawijamy do 0
+                unsigned char dziesiatki = value / 10;  // cyfra dziesiatek (0..9)
+                unsigned char jednosci   = value % 10;  // cyfra jednosci (0..9)
+                LATA = (dziesiatki << 4) | jednosci;    // Zapisz BCD: dziesiatki w starszych 4 bitach, jednosci w mlodszych
+                value++;
+                if (value > 99) {
+                    value = 0;
+                }
+                break;
+            }
+
+            case 6: {
+                // 2×4-bitowy licznik w kodzie BCD w dol (99...00)
+                // Najpierw wyswietlamy BCD z 'value', potem zmniejszamy;
+                // gdy wartosc przechodzi na 0 zmieniamy na 99
+                unsigned char dziesiatki = value / 10;
+                unsigned char jednosci   = value % 10;
+                LATA = (dziesiatki << 4) | jednosci;
+                if (value == 0) {
+                    value = 99;
+                } else {
+                    value--;
+                }
+                break;
+            }
+        }
+
+        // Opoznienie miedzy kolejnymi krokami licznika
+        __delay32(400000); 
+
+    }
+
+    return -1; //Nigdy nie zostanie osiągniete (petla nieskonczona)
+}

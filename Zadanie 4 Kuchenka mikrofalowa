@@ -1,0 +1,143 @@
+// PIC24FJ128GA010 Configuration Bit Settings
+// For more on Configuration Bits, see Section 1.1
+// consult your device data sheet
+// CONFIG2
+#pragma config POSCMOD = XT // XT Oscillator mode selected
+#pragma config OSCIOFNC = ON // OSC2/CLKO/RC15 as port I/O (RC15)
+#pragma config FCKSM = CSDCMD // Clock Switching and Monitor disabled
+#pragma config FNOSC = PRI // Primary Oscillator (XT, HS, EC)
+#pragma config IESO = ON // Int Ext Switch Over Mode enabled
+// CONFIG1
+#pragma config WDTPS = PS32768 // Watchdog Timer Postscaler (1:32,768)
+#pragma config FWPSA = PR128 // WDT Prescaler (1:128)
+#pragma config WINDIS = ON // Watchdog Timer Window Mode disabled
+#pragma config FWDTEN = OFF // Watchdog Timer disabled
+#pragma config ICS = PGx2 // Emulator/debugger uses EMUC2/EMUD2
+#pragma config GWRP = OFF // Writes to program memory allowed
+#pragma config GCP = OFF // Code protection is disabled
+#pragma config JTAGEN = OFF // JTAG port is disabled
+// #pragma config statements should precede project file includes.
+// Use project enums instead of #define for ON and OFF.
+#include <xc.h>
+#include <libpic30.h>
+#include <stdio.h>
+#include <string.h>
+#include "buttons.h"
+#include "adc.h"
+
+// Definicja makr tak by kod byl czytelny, przejrzysty, deskryptywny i przyjazny uzytkownikowi
+#define FCY 4000000UL // czestotliwosc robocza oscylatora jako polowa czestotliwosci (FNOSC = FRC -> FCY = 4000000)
+// Zdefiniowanie poszczegolnych pingow jako odpowiednie makra
+#define LCD_E LATDbits.LATD4
+#define LCD_RW LATDbits.LATD5
+#define LCD_RS LATBbits.LATB15
+#define LCD_DATA LATE
+// Przypisanie wartosci poszczegolnych komend do wlasciwych makr
+#define LCD_CLEAR 0x01 //0b00000001
+#define LCD_HOME 0x02 //0b00000010
+#define LCD_ON 0x0C //0b00001100
+#define LCD_OFF 0x08 //0b00001000
+#define LCD_CONFIG 0x38 //0b00111000
+#define LCD_CURSOR 0x80 //0b10000000
+#define LINE1 0x00
+#define LINE2 0x40
+#define LCD_CUST_CHAR 0x40 //0b01000000
+#define LCD_SHIFT_R 0x1D //0b00011100
+#define LCD_SHIFT_L 0x1B //0b00011000
+#define TOTAL_TIME (300)         // Maksymalny czas (limit 5 minut)
+#define INITIAL_TIME (30)       // Czas poczatkowy (30 sekund)
+volatile unsigned int seconds = INITIAL_TIME; // Czas trwania odliczania ustawiamy wstepnie na czas poczatkowy
+
+bool timerOn = false; // czy timer jest wlaczony
+// Definicja funkcji delay w us i ms - operujacych na jednostkach czasu zamiast cykli pracy oscylatora
+void __delay_us(unsigned long us){
+__delay32(us * FCY / 1000000);
+}
+void __delay_ms(unsigned long ms){
+__delay32(ms * FCY / 1000);
+}
+
+void LCD_sendCommand(unsigned char command){
+        LCD_RW = 0; // Zapis
+        LCD_RS = 0; // Przesylanie komend
+        LCD_E = 1; // Otwarcie transmisji danych
+        LCD_DATA = command;
+        __delay_us(50); // Opoznienie konieczne dla zapisania danych.
+        LCD_E = 0; // Konieczne zablokowanie transmisji po przeslaniu komunikatu.
+    }
+    
+    void LCD_setCursor(unsigned char row, unsigned char col){
+    unsigned char address;
+    if (row == 1){
+        address = LCD_CURSOR + LINE1 + col;
+    }
+    if (row == 2){
+        address = LCD_CURSOR + LINE2 + col;
+    }
+    LCD_sendCommand(address);
+    }
+
+int main(void) {
+    char buffer[16];                     // bufor na znaki do wyswietlenia na ekranie
+    LCD_Initialize();                    // inicjalizacja LCD
+
+    ADC_SetConfiguration(ADC_CONFIGURATION_DEFAULT); // inicjalizacja ADC
+    ADC_ChannelEnable(ADC_CHANNEL_POTENTIOMETER);    // wlączenie kanału potencjometru
+
+    unsigned int remainingSeconds = seconds;
+    unsigned int powerValue = 0; // zmienna na wartosc z potencjometru
+
+    while (remainingSeconds > 1) {
+        // Odczyt mocy z potencjometru
+        powerValue = ADC_Read10bit(ADC_CHANNEL_POTENTIOMETER);
+
+        // Obsługa przycisków
+        if (BUTTON_IsPressed(BUTTON_S3) == true) {        // dodaj 30 s
+            remainingSeconds += 30;
+            __delay_ms(20);
+        }
+        else if (BUTTON_IsPressed(BUTTON_S4) == true) {   // odejmij 30 s
+            if (remainingSeconds > 30)
+                remainingSeconds -= 30;
+            else
+                remainingSeconds = 1; // nie mozna odjac wiecej niz do 1 sekundy
+            __delay_ms(20);
+        }
+        else if (BUTTON_IsPressed(BUTTON_S5) == true) {   // start / stop
+            timerOn = !timerOn;
+            __delay_ms(20);
+        }
+        else if (BUTTON_IsPressed(BUTTON_S6) == true) {   // reset
+            remainingSeconds = INITIAL_TIME;
+            timerOn = false;
+            __delay_ms(20);
+        }
+
+        // Przeliczanie minut i sekund
+        unsigned char minutes = remainingSeconds / 60;
+        unsigned char secs = remainingSeconds % 60;
+        sprintf(buffer, "%02u:%02u", minutes, secs); // formatowanie czasu do bufora
+
+        // Wyswietlenie czasu
+        LCD_ClearScreen();
+        LCD_setCursor(1, 0);
+        LCD_PutString(buffer, strlen(buffer));
+        sprintf(buffer, " Power:%u", powerValue);
+        LCD_PutString(buffer, strlen(buffer));
+
+        // Odliczanie czasu tylko, gdy timer jest włączony
+        __delay32(4000000); // czekaj 1 sekundę
+        if (timerOn && remainingSeconds > 1) {
+            remainingSeconds--;
+        }
+    }
+
+    // Gdy czas się skonczy
+    sprintf(buffer, "%5s", "KONIEC");
+    LCD_ClearScreen();
+    LCD_setCursor(1, 0);
+    LCD_PutString(buffer, strlen(buffer));
+    __delay32(20000000); // czekaj 5 sekund
+
+    return 0;
+}
